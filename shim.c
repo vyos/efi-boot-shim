@@ -52,8 +52,6 @@ extern struct {
 	UINT32 vendor_deauthorized_offset;
 } cert_table;
 
-#define EFI_IMAGE_SECURITY_DATABASE_GUID { 0xd719b2cb, 0x3d3a, 0x4596, { 0xa3, 0xbc, 0xda, 0xd0, 0x0e, 0x67, 0x65, 0x6f }}
-
 typedef enum {
 	DATA_FOUND,
 	DATA_NOT_FOUND,
@@ -781,39 +779,6 @@ verify_buffer (char *data, int datasize,
 }
 
 static int
-is_removable_media_path(EFI_LOADED_IMAGE *li)
-{
-	unsigned int pathlen = 0;
-	CHAR16 *bootpath = NULL;
-	int ret = 0;
-
-	bootpath = DevicePathToStr(li->FilePath);
-
-	/* Check the beginning of the string and the end, to avoid
-	 * caring about which arch this is. */
-	/* I really don't know why, but sometimes bootpath gives us
-	 * L"\\EFI\\BOOT\\/BOOTX64.EFI".  So just handle that here...
-	 */
-	if (StrnCaseCmp(bootpath, L"\\EFI\\BOOT\\BOOT", 14) &&
-			StrnCaseCmp(bootpath, L"\\EFI\\BOOT\\/BOOT", 15) &&
-			StrnCaseCmp(bootpath, L"EFI\\BOOT\\BOOT", 13) &&
-			StrnCaseCmp(bootpath, L"EFI\\BOOT\\/BOOT", 14))
-		goto error;
-
-	pathlen = StrLen(bootpath);
-	if (pathlen < 5 || StrCaseCmp(bootpath + pathlen - 4, L".EFI"))
-		goto error;
-
-	ret = 1;
-
-error:
-	if (bootpath)
-		FreePool(bootpath);
-
-	return ret;
-}
-
-static int
 should_use_fallback(EFI_HANDLE image_handle)
 {
 	EFI_LOADED_IMAGE *li;
@@ -994,10 +959,9 @@ EFI_STATUS shim_verify (void *buffer, UINT32 size)
 	if ((INT32)size < 0)
 		return EFI_INVALID_PARAMETER;
 
-	loader_is_participating = 1;
 	in_protocol = 1;
 
-	efi_status = read_header(buffer, size, &context);
+	efi_status = read_header(buffer, size, &context, true);
 	if (EFI_ERROR(efi_status))
 		goto done;
 
@@ -1052,7 +1016,7 @@ static EFI_STATUS shim_read_header(void *data, unsigned int datasize,
 	EFI_STATUS efi_status;
 
 	in_protocol = 1;
-	efi_status = read_header(data, datasize, context);
+	efi_status = read_header(data, datasize, context, true);
 	in_protocol = 0;
 
 	return efi_status;
@@ -1091,7 +1055,8 @@ str16_to_str8(CHAR16 *str16, CHAR8 **str8)
  * Load and run an EFI executable
  */
 EFI_STATUS read_image(EFI_HANDLE image_handle, CHAR16 *ImagePath,
-		      CHAR16 **PathName, void **data, int *datasize)
+		      CHAR16 **PathName, void **data, int *datasize,
+		      int flags)
 {
 	EFI_STATUS efi_status;
 	void *sourcebuffer = NULL;
@@ -1128,10 +1093,11 @@ EFI_STATUS read_image(EFI_HANDLE image_handle, CHAR16 *ImagePath,
 		}
 		FreePool(netbootname);
 		efi_status = FetchNetbootimage(image_handle, &sourcebuffer,
-					       &sourcesize);
+					       &sourcesize, flags);
 		if (EFI_ERROR(efi_status)) {
-			perror(L"Unable to fetch TFTP image: %r\n",
-			       efi_status);
+			if (~flags & SUPPRESS_NETBOOT_OPEN_FAILURE_NOISE)
+				perror(L"Unable to fetch TFTP image: %r\n",
+				       efi_status);
 			return efi_status;
 		}
 		*data = sourcebuffer;
@@ -1143,8 +1109,9 @@ EFI_STATUS read_image(EFI_HANDLE image_handle, CHAR16 *ImagePath,
 						    &sourcesize,
 						    netbootname);
 		if (EFI_ERROR(efi_status)) {
-			perror(L"Unable to fetch HTTP image %a: %r\n",
-			       netbootname, efi_status);
+			if (~flags & SUPPRESS_NETBOOT_OPEN_FAILURE_NOISE)
+				perror(L"Unable to fetch HTTP image %a: %r\n",
+				       netbootname, efi_status);
 			return efi_status;
 		}
 		*data = sourcebuffer;
@@ -1156,7 +1123,7 @@ EFI_STATUS read_image(EFI_HANDLE image_handle, CHAR16 *ImagePath,
 		efi_status = load_image(shim_li, data, datasize, *PathName);
 		if (EFI_ERROR(efi_status)) {
 			perror(L"Failed to load image %s: %r\n",
-			       PathName, efi_status);
+			       *PathName, efi_status);
 			PrintErrors();
 			ClearErrors();
 			return efi_status;
@@ -1183,7 +1150,7 @@ EFI_STATUS start_image(EFI_HANDLE image_handle, CHAR16 *ImagePath)
 	int datasize = 0;
 
 	efi_status = read_image(image_handle, ImagePath, &PathName, &data,
-				&datasize);
+				&datasize, 0);
 	if (EFI_ERROR(efi_status))
 		goto done;
 
@@ -1215,7 +1182,9 @@ EFI_STATUS start_image(EFI_HANDLE image_handle, CHAR16 *ImagePath)
 		goto restore;
 	}
 
-	loader_is_participating = 0;
+#if 0
+	save_logs();
+#endif
 
 	/*
 	 * The binary is trusted and relocated. Run it
@@ -1257,10 +1226,15 @@ EFI_STATUS init_grub(EFI_HANDLE image_handle)
 					 use_fb ? FALLBACK : second_stage);
 	}
 
-	// If the filename is invalid, or the file does not exist,
-	// just fallback to the default loader.
+	/*
+	 * If the filename is invalid, or the file does not exist, just fall
+	 * back to the default loader.  Also fall back to the default loader
+	 * if we get a TFTP error or HTTP error.
+	 */
 	if (!use_fb && (efi_status == EFI_INVALID_PARAMETER ||
-	                efi_status == EFI_NOT_FOUND)) {
+	                efi_status == EFI_NOT_FOUND ||
+	                efi_status == EFI_HTTP_ERROR ||
+	                efi_status == EFI_TFTP_ERROR)) {
 		console_print(
 			L"start_image() returned %r, falling back to default loader\n",
 			efi_status);
@@ -1286,7 +1260,7 @@ EFI_STATUS set_second_stage (EFI_HANDLE image_handle)
 	EFI_STATUS efi_status;
 	EFI_LOADED_IMAGE *li = NULL;
 
-	second_stage = DEFAULT_LOADER;
+	second_stage = (optional_second_stage) ? optional_second_stage : DEFAULT_LOADER;
 	load_options = NULL;
 	load_options_size = 0;
 
@@ -1373,13 +1347,17 @@ install_shim_protocols(void)
 	if (!EFI_ERROR(efi_status))
 		uninstall_shim_protocols();
 
+	init_image_loader();
+
 	/*
 	 * Install the protocol
 	 */
-	efi_status = BS->InstallProtocolInterface(&shim_lock_handle,
-						  &SHIM_LOCK_GUID,
-						  EFI_NATIVE_INTERFACE,
-						  &shim_lock_interface);
+	efi_status = BS->InstallMultipleProtocolInterfaces(&shim_lock_handle,
+							   &SHIM_LOCK_GUID,
+							   &shim_lock_interface,
+							   &SHIM_IMAGE_LOADER_GUID,
+							   &shim_image_loader_interface,
+							   NULL);
 	if (EFI_ERROR(efi_status)) {
 		console_error(L"Could not install security protocol",
 			      efi_status);
@@ -1405,8 +1383,12 @@ uninstall_shim_protocols(void)
 	/*
 	 * If we're back here then clean everything up before exiting
 	 */
-	BS->UninstallProtocolInterface(shim_lock_handle, &SHIM_LOCK_GUID,
-				       &shim_lock_interface);
+	BS->UninstallMultipleProtocolInterfaces(shim_lock_handle,
+						&SHIM_LOCK_GUID,
+						&shim_lock_interface,
+						&SHIM_IMAGE_LOADER_GUID,
+						&shim_image_loader_interface,
+						NULL);
 
 	if (!secure_mode())
 		return;
@@ -1444,7 +1426,7 @@ check_section_helper(char *section_name, int len, void **pointer,
 	                     section, data, datasize, minsize)
 
 EFI_STATUS
-load_revocations_file(EFI_HANDLE image_handle, CHAR16 *PathName)
+load_revocations_file(EFI_HANDLE image_handle, CHAR16 *FileName, CHAR16 *PathName)
 {
 	EFI_STATUS efi_status = EFI_SUCCESS;
 	PE_COFF_LOADER_IMAGE_CONTEXT context;
@@ -1459,12 +1441,12 @@ load_revocations_file(EFI_HANDLE image_handle, CHAR16 *PathName)
 	uint8_t *ssps_latest = NULL;
 	uint8_t *sspv_latest = NULL;
 
-	efi_status = read_image(image_handle, L"revocations.efi", &PathName,
-				&data, &datasize);
-	if (EFI_ERROR(efi_status))
-		return efi_status;
+	efi_status = read_image(image_handle, FileName, &PathName,
+				&data, &datasize,
+				SUPPRESS_NETBOOT_OPEN_FAILURE_NOISE);
+	if (!EFI_ERROR(efi_status))
+		efi_status = verify_image(data, datasize, shim_li, &context);
 
-	efi_status = verify_image(data, datasize, shim_li, &context);
 	if (EFI_ERROR(efi_status)) {
 		dprint(L"revocations failed to verify\n");
 		return efi_status;
@@ -1510,7 +1492,8 @@ load_revocations_file(EFI_HANDLE image_handle, CHAR16 *PathName)
 }
 
 EFI_STATUS
-load_cert_file(EFI_HANDLE image_handle, CHAR16 *filename, CHAR16 *PathName)
+load_cert_file(EFI_HANDLE image_handle, CHAR16 *filename, CHAR16 *PathName,
+		int flags)
 {
 	EFI_STATUS efi_status;
 	PE_COFF_LOADER_IMAGE_CONTEXT context;
@@ -1518,37 +1501,58 @@ load_cert_file(EFI_HANDLE image_handle, CHAR16 *filename, CHAR16 *PathName)
 	EFI_SIGNATURE_LIST *certlist;
 	void *pointer;
 	UINT32 original;
+	UINT32 offset;
 	int datasize = 0;
 	void *data = NULL;
 	int i;
 
 	efi_status = read_image(image_handle, filename, &PathName,
-				&data, &datasize);
+				&data, &datasize, flags);
 	if (EFI_ERROR(efi_status))
 		return efi_status;
 
 	efi_status = verify_image(data, datasize, shim_li, &context);
-	if (EFI_ERROR(efi_status))
+	if (EFI_ERROR(efi_status)) {
+		FreePool(data);
 		return efi_status;
+	}
 
 	Section = context.FirstSection;
 	for (i = 0; i < context.NumberOfSections; i++, Section++) {
+		UINT32 sec_size = MIN(Section->Misc.VirtualSize, Section->SizeOfRawData);
+
 		if (CompareMem(Section->Name, ".db\0\0\0\0\0", 8) == 0) {
-			original = user_cert_size;
-			if (Section->SizeOfRawData < sizeof(EFI_SIGNATURE_LIST)) {
-				continue;
+			offset = 0;
+			while ((sec_size - offset) >= sizeof(EFI_SIGNATURE_LIST)) {
+				UINT8 *tmp;
+
+				original = user_cert_size;
+				pointer = ImageAddress(data, datasize,
+						   Section->PointerToRawData + offset);
+				if (!pointer) {
+				    break;
+				}
+				certlist = pointer;
+
+				if (certlist->SignatureListSize < sizeof(EFI_SIGNATURE_LIST) ||
+					checked_add(offset, certlist->SignatureListSize, &offset) ||
+					offset > sec_size ||
+					checked_add(user_cert_size, certlist->SignatureListSize,
+						    &user_cert_size)) {
+					break;
+				}
+
+				tmp = ReallocatePool(user_cert, original,
+						     user_cert_size);
+				if (!tmp) {
+					FreePool(data);
+					return EFI_OUT_OF_RESOURCES;
+				}
+				user_cert = tmp;
+
+				CopyMem(user_cert + original, pointer,
+				    certlist->SignatureListSize);
 			}
-			pointer = ImageAddress(data, datasize,
-					       Section->PointerToRawData);
-			if (!pointer) {
-				continue;
-			}
-			certlist = pointer;
-			user_cert_size += certlist->SignatureListSize;;
-			user_cert = ReallocatePool(user_cert, original,
-						   user_cert_size);
-			CopyMem(user_cert + original, pointer,
-			        certlist->SignatureListSize);
 		}
 	}
 	FreePool(data);
@@ -1565,6 +1569,7 @@ load_unbundled_trust(EFI_HANDLE image_handle)
 	EFI_STATUS efi_status;
 	EFI_LOADED_IMAGE *li = NULL;
 	CHAR16 *PathName = NULL;
+	static CHAR16 FileName[] = L"shim_certificate_0.efi";
 	EFI_FILE *root, *dir;
 	EFI_FILE_INFO *info;
 	EFI_HANDLE device;
@@ -1572,6 +1577,7 @@ load_unbundled_trust(EFI_HANDLE image_handle)
 	UINTN buffersize = 0;
 	void *buffer = NULL;
 	BOOLEAN search_revocations = TRUE;
+	int i = 0;
 
 	efi_status = gBS->HandleProtocol(image_handle, &EFI_LOADED_IMAGE_GUID,
 					 (void **)&li);
@@ -1592,11 +1598,17 @@ load_unbundled_trust(EFI_HANDLE image_handle)
 				efi_status);
 		/*
 		 * Network boot cases do not support reading a directory. Try
-		 * to read revocations.efi to pull in any unbundled SBATLevel
+		 * to read revocations to pull in any unbundled SBATLevel
 		 * updates unconditionally in those cases. This may produce
 		 * console noise when the file is not present.
 		 */
-		load_cert_file(image_handle, REVOCATIONFILE, PathName);
+		load_revocations_file(image_handle, SKUSIREVOCATIONFILE, PathName);
+		load_revocations_file(image_handle, SBATREVOCATIONFILE, PathName);
+		while (load_cert_file(image_handle, FileName, PathName,
+			SUPPRESS_NETBOOT_OPEN_FAILURE_NOISE) == EFI_SUCCESS
+			&& i++ < 10) {
+			FileName[17]++;
+		}
 		goto done;
 	}
 
@@ -1666,17 +1678,17 @@ load_unbundled_trust(EFI_HANDLE image_handle)
 		}
 
 		/*
-		 * In the event that there are unprocessed revocation
+		 * In the event that there are unprocessed sbat revocation
 		 * additions, they could be intended to ban any *new* trust
 		 * anchors we find here. With that in mind, we always want to
 		 * do a pass of loading revocations before we try to add
 		 * anything new to our allowlist. This is done by making two
 		 * passes over the directory, first to search for the
-		 * revocations.efi file then to search for shim_certificate.efi
+		 * revocations_sbat.efi file then to search for shim_certificate*.efi
 		 */
 		if (search_revocations &&
-		    StrCaseCmp(info->FileName, REVOCATIONFILE) == 0) {
-			load_revocations_file(image_handle, PathName);
+		    StrCaseCmp(info->FileName, SBATREVOCATIONFILE) == 0) {
+			load_revocations_file(image_handle, SBATREVOCATIONFILE, PathName);
 			search_revocations = FALSE;
 			efi_status = root->Open(root, &dir, PathName,
 						EFI_FILE_MODE_READ, 0);
@@ -1687,15 +1699,100 @@ load_unbundled_trust(EFI_HANDLE image_handle)
 			}
 		}
 
-		if (!search_revocations &&
-		    StrCaseCmp(info->FileName, L"shim_certificate.efi") == 0) {
-			load_cert_file(image_handle, info->FileName, PathName);
+		if (!search_revocations) {
+			if (StrnCaseCmp(info->FileName, L"shim_certificate", 16) == 0) {
+				load_cert_file(image_handle, info->FileName, PathName, 0);
+			}
+			if (StrCaseCmp(info->FileName, SKUSIREVOCATIONFILE) == 0) {
+				load_revocations_file(image_handle,
+					SKUSIREVOCATIONFILE, PathName);
+			}
 		}
 	}
 done:
 	FreePool(buffer);
 	FreePool(PathName);
 	return efi_status;
+}
+
+/* Read optional options file */
+EFI_STATUS
+load_shim_options(EFI_HANDLE image_handle)
+{
+	EFI_STATUS efi_status;
+	EFI_HANDLE device;
+	EFI_LOADED_IMAGE *li = NULL;
+	EFI_FILE_IO_INTERFACE *drive;
+	EFI_FILE *root;
+	EFI_FILE_HANDLE ofile;
+	CHAR16 *PathName = NULL;
+	CHAR16 *buffer;
+	UINTN comma0;
+	UINT64 bs;
+
+	efi_status = gBS->HandleProtocol(image_handle, &EFI_LOADED_IMAGE_GUID,
+					 (void **)&li);
+	if (EFI_ERROR(efi_status)) {
+		perror(L"Unable to init protocol\n");
+		return efi_status;
+	}
+
+	efi_status = generate_path_from_image_path(li, L"options.csv", &PathName);
+	if (EFI_ERROR(efi_status))
+		goto done;
+
+	device = li->DeviceHandle;
+
+	efi_status = BS->HandleProtocol(device, &EFI_SIMPLE_FILE_SYSTEM_GUID,
+					(void **) &drive);
+	if (EFI_ERROR(efi_status))
+		goto done;
+
+	efi_status = drive->OpenVolume(drive, &root);
+	if (EFI_ERROR(efi_status)) {
+		perror(L"Failed to open fs: %r\n", efi_status);
+		goto done;
+	}
+
+	efi_status = root->Open(root, &ofile, PathName, EFI_FILE_READ_ONLY, 0);
+	if (EFI_ERROR(efi_status)) {
+		if (efi_status != EFI_NOT_FOUND)
+			perror(L"Failed to open %s - %r\n", PathName, efi_status);
+		goto done;
+	}
+
+	dprint(L"Loading optional second stage info from options.csv\n");
+	efi_status = read_file(ofile, PathName, &buffer, &bs);
+	if (EFI_ERROR(efi_status)) {
+		perror(L"Failed to read file\n");
+		goto done;
+	}
+
+	/*
+	 * This file may or may not start with the Unicode byte order marker.
+	 * Since UEFI is defined as LE, this file must also be LE.
+	 * If we find the LE byte order marker, just skip its.
+	 */
+	if (*buffer == 0xfeff)
+		buffer++;
+
+	comma0 = StrCSpn(buffer, L",");
+	if (comma0 == 0) {
+		perror(L"Invalid csv file\n");
+		goto done;
+	}
+
+	/*
+	 * Currently the options.csv file allows one entry for the optional
+	 * secondary boot stage, anything afterwards is skipped.
+	 */
+	buffer[comma0] = L'\0';
+	dprint(L"Optional 2nd stage:\"%s\"\n", buffer);
+	optional_second_stage=buffer;
+
+done:
+	FreePool(PathName);
+	return EFI_SUCCESS;
 }
 
 EFI_STATUS
@@ -1720,7 +1817,6 @@ shim_init(void)
 			 * validation of the next image.
 			 */
 			hook_system_services(systab);
-			loader_is_participating = 0;
 		}
 
 	}
@@ -1746,11 +1842,12 @@ shim_fini(void)
 	uninstall_shim_protocols();
 
 	if (secure_mode()) {
-
-		/*
-		 * Remove our hooks from system services.
-		 */
-		unhook_system_services();
+		if (vendor_authorized_size || vendor_deauthorized_size) {
+			/*
+			* Remove our hooks from system services.
+			*/
+			unhook_system_services();
+		}
 	}
 
 	unhook_exit();
@@ -1860,7 +1957,7 @@ efi_main (EFI_HANDLE passed_image_handle, EFI_SYSTEM_TABLE *passed_systab)
 		L"shim_init() failed",
 		L"import of SBAT data failed",
 		L"SBAT self-check failed",
-		SBAT_VAR_NAME L" UEFI variable setting failed",
+		SBAT_VAR_NAME L" UEFI variable setting failed", // NOLINT(bugprone-suspicious-missing-comma)
 		NULL
 	};
 	enum {
@@ -1898,6 +1995,8 @@ efi_main (EFI_HANDLE passed_image_handle, EFI_SYSTEM_TABLE *passed_systab)
 	 */
 	debug_hook();
 
+	get_shim_nx_capability(image_handle);
+
 	efi_status = set_sbat_uefi_variable_internal();
 	if (EFI_ERROR(efi_status) && secure_mode()) {
 		perror(L"%s variable initialization failed\n", SBAT_VAR_NAME);
@@ -1929,7 +2028,7 @@ efi_main (EFI_HANDLE passed_image_handle, EFI_SYSTEM_TABLE *passed_systab)
 
 		efi_status = verify_sbat_section(sbat_start, sbat_end - sbat_start - 1);
 		if (EFI_ERROR(efi_status)) {
-			perror(L"Verifiying shim SBAT data failed: %r\n",
+			perror(L"Verifying shim SBAT data failed: %r\n",
 			       efi_status);
 			msg = SBAT_SELF_CHECK;
 			goto die;
@@ -1938,6 +2037,7 @@ efi_main (EFI_HANDLE passed_image_handle, EFI_SYSTEM_TABLE *passed_systab)
 	}
 
 	init_openssl();
+	get_hsi_mem_info();
 
 	efi_status = load_unbundled_trust(global_image_handle);
 	if (EFI_ERROR(efi_status)) {
@@ -1980,6 +2080,8 @@ die:
 	 * not set when we are starting up.
 	 */
 	(void) del_variable(SHIM_RETAIN_PROTOCOL_VAR_NAME, SHIM_LOCK_GUID);
+
+	load_shim_options(image_handle);
 
 	efi_status = shim_init();
 	if (EFI_ERROR(efi_status)) {

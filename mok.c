@@ -34,6 +34,58 @@ static BOOLEAN check_var(CHAR16 *varname)
 		efi_status_;                                                        \
 	})
 
+static UINTN
+format_hsi_status(UINT8 *buf, size_t sz,
+		  struct mok_state_variable *msv UNUSED)
+{
+	const char heapx[] = "heap-is-executable: ";
+	const char stackx[] = "\nstack-is-executable: ";
+	const char row[] = "\nro-sections-are-writable: ";
+	const char hasmap[] = "\nhas-memory-attribute-protocol: ";
+	const char hasdxeservices[] = "\nhas-dxe-services-table: ";
+	const char hasdsgmsd[] = "\nhas-get-memory-space-descriptor: ";
+	const char hasdssmsa[] = "\nhas-set-memory-space-attributes: ";
+	const char shimhasnx[] = "\nshim-has-nx-compat-set: ";
+	const char finale[] = "\n";
+	char *pos;
+
+	/*
+	 * sizeof includes the trailing NUL which is where our 0 or 1 value
+	 * fits
+	 */
+	UINTN ret = sizeof(heapx) + sizeof(stackx) +
+		    sizeof(row) + sizeof(hasmap) +
+		    sizeof(hasdxeservices) + sizeof(hasdsgmsd) +
+		    sizeof(hasdssmsa) + sizeof(shimhasnx) +
+		    sizeof(finale);
+
+	if (buf == 0 || sz < ret) {
+		return ret;
+	}
+
+	buf[0] = 0;
+	pos = (char *)buf;
+	pos = stpcpy(pos, heapx);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_HEAPX) ? "1" : "0");
+	pos = stpcpy(pos, stackx);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_STACKX) ? "1" : "0");
+	pos = stpcpy(pos, row);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_ROW) ? "1" : "0");
+	pos = stpcpy(pos, hasmap);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_HASMAP) ? "1" : "0");
+	pos = stpcpy(pos, hasdxeservices);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_HASDST) ? "1" : "0");
+	pos = stpcpy(pos, hasdsgmsd);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_HASDSTGMSD) ? "1" : "0");
+	pos = stpcpy(pos, hasdssmsa);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_HASDSTSMSA) ? "1" : "0");
+	pos = stpcpy(pos, shimhasnx);
+	pos = stpcpy(pos, (hsi_status & SHIM_HSI_STATUS_NX) ? "1" : "0");
+	stpcpy(pos, finale);
+
+	return ret;
+}
+
 /*
  * If the OS has set any of these variables we need to drop into MOK and
  * handle them appropriately
@@ -50,6 +102,32 @@ static EFI_STATUS check_mok_request(EFI_HANDLE image_handle)
 		efi_status = start_image(image_handle, MOK_MANAGER);
 
 		if (EFI_ERROR(efi_status)) {
+			/*
+			 * We don't do this in the unit tests because we
+			 * don't have simulation for console_countdown()
+			 * and similar.
+			 */
+#ifndef SHIM_UNIT_TEST
+			EFI_STATUS efi_status_2;
+			EFI_LOADED_IMAGE *li;
+			efi_status_2 = BS->HandleProtocol(image_handle, &EFI_LOADED_IMAGE_GUID,
+							 (void **)&li);
+			if (EFI_ERROR(efi_status_2))
+				perror (L"Failed to get image: %r\n", efi_status_2);
+			else if (is_removable_media_path(li) &&
+				 efi_status == EFI_NOT_FOUND) {
+				CHAR16 *title = L"Could not find MokManager";
+				CHAR16 *message = L"MokManager is missing on removable media.";
+				/*
+				 * This occurs when system is booting on
+				 * hard disk's EFI/BOOT/BOOTxxx.EFI entry
+				 * while it should have booted on
+				 * EFI/<os>/shimxxx.efi entry
+				 */
+				console_countdown(title, message, 10);
+				RT->ResetSystem(EfiResetWarm, EFI_SUCCESS, 0, NULL);
+			}
+#endif
 			perror(L"Failed to start MokManager: %r\n", efi_status);
 			return efi_status;
 		}
@@ -79,12 +157,6 @@ categorize_deauthorized(struct mok_state_variable *v)
 
 	return VENDOR_ADDEND_DB;
 }
-
-#define MOK_MIRROR_KEYDB	0x01
-#define MOK_MIRROR_DELETE_FIRST	0x02
-#define MOK_VARIABLE_MEASURE	0x04
-#define MOK_VARIABLE_LOG	0x08
-#define MOK_VARIABLE_INVERSE	0x10
 
 struct mok_state_variable mok_state_variable_data[] = {
 	{.name = L"MokList",
@@ -196,6 +268,161 @@ struct mok_state_variable mok_state_variable_data[] = {
 	 .pcr = 14,
 	 .state = &mok_policy,
 	},
+	{.name = L"HSIStatus",
+	 .name8 = "HSIStatus",
+	 .rtname = L"HSIStatus",
+	 .rtname8 = "HSIStatus",
+	 .guid = &SHIM_LOCK_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	 .format = format_hsi_status,
+	},
+	{.name = L"AuditMode",
+	 .name8 = "AuditMode",
+	 .rtname = L"AuditMode",
+	 .rtname8 = "AuditMode",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"BootOrder",
+	 .name8 = "BootOrder",
+	 .rtname = L"BootOrder",
+	 .rtname8 = "BootOrder",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"BootCurrent",
+	 .name8 = "BootCurrent",
+	 .rtname = L"BootCurrent",
+	 .rtname8 = "BootCurrent",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"BootNext",
+	 .name8 = "BootNext",
+	 .rtname = L"BootNext",
+	 .rtname8 = "BootNext",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Boot0000",
+	 .name8 = "Boot0000",
+	 .rtname = L"Boot0000",
+	 .rtname8 = "Boot0000",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Boot0001",
+	 .name8 = "Boot0001",
+	 .rtname = L"Boot0001",
+	 .rtname8 = "Boot0001",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Boot0002",
+	 .name8 = "Boot0002",
+	 .rtname = L"Boot0002",
+	 .rtname8 = "Boot0002",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Boot0003",
+	 .name8 = "Boot0003",
+	 .rtname = L"Boot0003",
+	 .rtname8 = "Boot0003",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Boot0004",
+	 .name8 = "Boot0004",
+	 .rtname = L"Boot0004",
+	 .rtname8 = "Boot0004",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Boot0005",
+	 .name8 = "Boot0005",
+	 .rtname = L"Boot0005",
+	 .rtname8 = "Boot0005",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Boot0006",
+	 .name8 = "Boot0006",
+	 .rtname = L"Boot0006",
+	 .rtname8 = "Boot0006",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"DeployedMode",
+	 .name8 = "DeployedMode",
+	 .rtname = L"DeployedMode",
+	 .rtname8 = "DeployedMode",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"SecureBoot",
+	 .name8 = "SecureBoot",
+	 .rtname = L"SecureBoot",
+	 .rtname8 = "SecureBoot",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"SetupMode",
+	 .name8 = "SetupMode",
+	 .rtname = L"SetupMode",
+	 .rtname8 = "SetupMode",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"SignatureSupport",
+	 .name8 = "SignatureSupport",
+	 .rtname = L"SignatureSupport",
+	 .rtname8 = "SignatureSupport",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Timeout",
+	 .name8 = "Timeout",
+	 .rtname = L"Timeout",
+	 .rtname8 = "Timeout",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"PK",
+	 .name8 = "PK",
+	 .rtname = L"PK",
+	 .rtname8 = "PK",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"KEK",
+	 .name8 = "KEK",
+	 .rtname = L"KEK",
+	 .rtname8 = "KEK",
+	 .guid = &GV_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"db",
+	 .name8 = "db",
+	 .rtname = L"db",
+	 .rtname8 = "db",
+	 .guid = &SIG_DB,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"dbx",
+	 .name8 = "dbx",
+	 .rtname = L"dbx",
+	 .rtname8 = "dbx",
+	 .guid = &SIG_DB,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
+	{.name = L"Kernel_SkuSiStatus",
+	 .name8 = "Kernel_SkuSiStatus",
+	 .rtname = L"Kernel_SkuSiStatus",
+	 .rtname8 = "Kernel_SkuSiStatus",
+	 .guid = &SECUREBOOT_EFI_NAMESPACE_GUID,
+	 .flags = MOK_VARIABLE_CONFIG_ONLY,
+	},
 	{ NULL, }
 };
 size_t n_mok_state_variables = sizeof(mok_state_variable_data) / sizeof(mok_state_variable_data[0]);
@@ -217,6 +444,47 @@ typedef UINTN SIZE_T;
 #define EFI_MAJOR_VERSION(tablep) ((UINT16)((((tablep)->Hdr.Revision) >> 16) & 0xfffful))
 #define EFI_MINOR_VERSION(tablep) ((UINT16)(((tablep)->Hdr.Revision) & 0xfffful))
 
+static BOOLEAN is_apple_firmware_vendor(void)
+{
+	CHAR16 vendorbuf[6] = L"";
+	CHAR16 *vendor = ST->FirmwareVendor;
+	if (!vendor)
+		return FALSE;
+
+	ZeroMem(vendorbuf, sizeof(vendorbuf));
+
+	/*
+	 * We've had a problem where ST->FirmwareVendor is only as big as
+	 * it needs to be (or at least less than the 200 bytes we formerly
+	 * defined vendorbuf as) and it's up against a page that's not
+	 * mapped readable, so we take a fault and reset when copying from
+	 * it.
+	 *
+	 * We modeled this after kernel, which has the 200 byte CHAR16
+	 * array and copies 198 bytes into it, so that there's a NUL
+	 * terminator.  They solve this issue by mapping the whole 200
+	 * bytes unconditionally and then unmapping it after the copy, but
+	 * we can't take that approach because we don't necessarily have
+	 * page permission primitives at all.
+	 *
+	 * The 200 bytes (CHAR16 [100]) is an arbitrary number anyway, but
+	 * it's likely larger than any sane vendor name, and we still want
+	 * to do the copy into an array larger than our copied data because
+	 * that's how we guard against failure to terminate with a NUL.
+	 *
+	 * So right now we're only copying ten bytes, because Apple is the
+	 * only vendor we're testing against.
+	 */
+	CopyMem(vendorbuf, vendor, 10);
+
+	dprint(L"FirmwareVendor: \"%s\"\n", vendor);
+
+	if (StrnCmp(vendor, L"Apple", 5) == 0)
+		return TRUE;
+
+	return FALSE;
+}
+
 static EFI_STATUS
 get_max_var_sz(UINT32 attrs, SIZE_T *max_var_szp)
 {
@@ -226,7 +494,7 @@ get_max_var_sz(UINT32 attrs, SIZE_T *max_var_szp)
 	uint64_t max_var_sz = 0;
 
 	*max_var_szp = 0;
-	if (EFI_MAJOR_VERSION(RT) < 2) {
+	if (EFI_MAJOR_VERSION(RT) < 2 || is_apple_firmware_vendor()) {
 		dprint(L"EFI %d.%d; no RT->QueryVariableInfo().  Using 1024!\n",
 		       EFI_MAJOR_VERSION(RT), EFI_MINOR_VERSION(RT));
 		max_var_sz = remaining_sz = max_storage_sz = 1024;
@@ -310,7 +578,7 @@ mirror_one_esl(CHAR16 *name, EFI_GUID *guid, UINT32 attrs,
 }
 
 static EFI_STATUS
-mirror_mok_db(CHAR16 *name, CHAR8 *name8, EFI_GUID *guid, UINT32 attrs,
+mirror_mok_db(CHAR16 *name, EFI_GUID *guid, UINT32 attrs,
 	      UINT8 *FullData, SIZE_T FullDataSize, BOOLEAN only_first)
 {
 	EFI_STATUS efi_status = EFI_SUCCESS;
@@ -336,27 +604,19 @@ mirror_mok_db(CHAR16 *name, CHAR8 *name8, EFI_GUID *guid, UINT32 attrs,
 		return efi_status;
 	}
 
-	CHAR16 *namen;
-	CHAR8 *namen8;
+	CHAR16 *namen = NULL;
 	UINTN namelen, namesz;
 
 	namelen = StrLen(name);
 	namesz = namelen * 2;
 	if (only_first) {
 		namen = name;
-		namen8 = name8;
 	} else {
 		namelen += 18;
 		namesz += 34;
 		namen = AllocateZeroPool(namesz);
 		if (!namen) {
 			LogError(L"Could not allocate %lu bytes", namesz);
-			return EFI_OUT_OF_RESOURCES;
-		}
-		namen8 = AllocateZeroPool(namelen);
-		if (!namen8) {
-			FreePool(namen);
-			LogError(L"Could not allocate %lu bytes", namelen);
 			return EFI_OUT_OF_RESOURCES;
 		}
 	}
@@ -400,11 +660,6 @@ mirror_mok_db(CHAR16 *name, CHAR8 *name8, EFI_GUID *guid, UINT32 attrs,
 		if (!only_first) {
 			SPrint(namen, namelen, L"%s%lu", name, i);
 			namen[namelen-1] = 0;
-			/* uggggh */
-			UINTN j;
-			for (j = 0; j < namelen; j++)
-				namen8[j] = (CHAR8)(namen[j] & 0xff);
-			namen8[namelen - 1] = 0;
 		}
 
 		/*
@@ -417,7 +672,6 @@ mirror_mok_db(CHAR16 *name, CHAR8 *name8, EFI_GUID *guid, UINT32 attrs,
 				 efi_status);
 			if (!only_first) {
 				FreePool(namen);
-				FreePool(namen8);
 			}
 			return efi_status;
 		}
@@ -472,6 +726,9 @@ mirror_mok_db(CHAR16 *name, CHAR8 *name8, EFI_GUID *guid, UINT32 attrs,
 			break;
 		i++;
 	}
+	if (namen && namen != name) {
+		FreePool(namen);
+	}
 
 	if (EFI_ERROR(efi_status)) {
 		perror(L"Failed to set %s: %r\n", name, efi_status);
@@ -515,6 +772,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 	EFI_STATUS efi_status = EFI_SUCCESS;
 	uint8_t *FullData = NULL;
 	size_t FullDataSize = 0;
+	bool allocated_full_data = false;
 	vendor_addend_category_t addend_category = VENDOR_ADDEND_NONE;
 	uint8_t *p = NULL;
 	uint32_t attrs = EFI_VARIABLE_BOOTSERVICE_ACCESS |
@@ -579,6 +837,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 			if (efi_status != EFI_BUFFER_TOO_SMALL) {
 				perror(L"Could not add built-in cert to %s: %r\n",
 				       v->name, efi_status);
+				goto err;
 				return efi_status;
 			}
 			FullDataSize += addend_esl_sz;
@@ -663,6 +922,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 				       FullDataSize, v->name);
 				return EFI_OUT_OF_RESOURCES;
 			}
+			allocated_full_data = true;
 			p = FullData;
 		}
 	}
@@ -692,7 +952,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 			if (EFI_ERROR(efi_status)) {
 				perror(L"Could not add built-in cert to %s: %r\n",
 				       v->name, efi_status);
-				return efi_status;
+				goto err;
 			}
 			p += addend_esl_sz;
 			dprint(L"FullDataSize:%lu FullData:0x%llx p:0x%llx pos:%lld\n",
@@ -719,7 +979,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 			if (EFI_ERROR(efi_status)) {
 				perror(L"Could not add built-in cert to %s: %r\n",
 				       v->name, efi_status);
-				return efi_status;
+				goto err;
 			}
 			p += build_cert_esl_sz;
 			dprint(L"FullDataSize:%lu FullData:0x%llx p:0x%llx pos:%lld\n",
@@ -758,7 +1018,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 		if (EFI_ERROR(efi_status)) {
 			perror(L"Failed to allocate %lu bytes for %s\n",
 			       FullDataSize, v->name);
-			return efi_status;
+			goto err;
 		}
 		p = FullData + FullDataSize;
 		dprint(L"FullDataSize:%lu FullData:0x%llx p:0x%llx pos:%lld\n",
@@ -767,15 +1027,17 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 
 	dprint(L"FullDataSize:%lu FullData:0x%llx p:0x%llx pos:%lld\n",
 	       FullDataSize, FullData, p, p-(uintptr_t)FullData);
-	if (FullDataSize && v->flags & MOK_MIRROR_KEYDB) {
+	if (FullDataSize && v->flags & MOK_MIRROR_KEYDB &&
+	    !(v->flags & MOK_VARIABLE_CONFIG_ONLY)) {
 		dprint(L"calling mirror_mok_db(\"%s\",  datasz=%lu)\n",
 		       v->rtname, FullDataSize);
-		efi_status = mirror_mok_db(v->rtname, (CHAR8 *)v->rtname8, v->guid,
+		efi_status = mirror_mok_db(v->rtname, v->guid,
 					   attrs, FullData, FullDataSize,
 					   only_first);
 		dprint(L"mirror_mok_db(\"%s\",  datasz=%lu) returned %r\n",
 		       v->rtname, FullDataSize, efi_status);
-	} else if (FullDataSize && only_first) {
+	} else if (FullDataSize && only_first &&
+		   !(v->flags & MOK_VARIABLE_CONFIG_ONLY)) {
 		efi_status = SetVariable(v->rtname, v->guid, attrs,
 					 FullDataSize, FullData);
 	}
@@ -789,7 +1051,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 			if (EFI_ERROR(efi_status)) {
 				dprint(L"tpm_measure_variable(\"%s\",%lu,0x%llx)->%r\n",
 				       v->name, FullDataSize, FullData, efi_status);
-				return efi_status;
+				goto err;
 			}
 		}
 
@@ -806,7 +1068,7 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 				dprint(L"tpm_log_event(0x%llx, %lu, %lu, \"%s\")->%r\n",
 				       FullData, FullDataSize, v->pcr, v->name,
 				       efi_status);
-				return efi_status;
+				goto err;
 			}
 		}
 
@@ -819,6 +1081,10 @@ mirror_one_mok_variable(struct mok_state_variable *v,
 	v->data = FullData;
 	v->data_size = FullDataSize;
 	dprint(L"returning %r\n", efi_status);
+	return efi_status;
+err:
+	if (FullData && allocated_full_data)
+		FreePool(FullData);
 	return efi_status;
 }
 
@@ -871,7 +1137,8 @@ EFI_STATUS import_one_mok_state(struct mok_state_variable *v,
 
 	dprint(L"importing mok state for \"%s\"\n", v->name);
 
-	if (!v->data && !v->data_size) {
+	if (!v->data && !v->data_size &&
+	    !(v->flags & MOK_VARIABLE_CONFIG_ONLY)) {
 		efi_status = get_variable_attr(v->name,
 					       &v->data, &v->data_size,
 					       *v->guid, &attrs);
@@ -913,6 +1180,36 @@ EFI_STATUS import_one_mok_state(struct mok_state_variable *v,
 			}
 		}
 	}
+
+	if (v->format) {
+		v->data_size = v->format(NULL, 0, v);
+		if (v->data_size > 0) {
+			v->data = AllocatePool(v->data_size);
+			if (!v->data) {
+				perror(L"Could not allocate %lu bytes for %s\n",
+				       v->data_size, v->name);
+				return EFI_OUT_OF_RESOURCES;
+			}
+		}
+		v->format(v->data, v->data_size, v);
+	}
+
+	if (!v->data && !v->data_size &&
+	    (v->flags & MOK_VARIABLE_CONFIG_ONLY) &&
+	    !v->format) {
+		efi_status = get_variable_attr(v->name,
+					       &v->data, &v->data_size,
+					       *v->guid, &attrs);
+		if (EFI_ERROR(efi_status)) {
+			dprint(L"Couldn't get variable \"%s\" for mirroring: %r\n",
+			       v->name, efi_status);
+			if (efi_status != EFI_NOT_FOUND)
+				return efi_status;
+			v->data = NULL;
+			v->data_size = 0;
+		}
+	}
+
 	if (delete == TRUE) {
 		perror(L"Deleting bad variable %s\n", v->name);
 		efi_status = LibDeleteVariable(v->name, v->guid);
@@ -1004,6 +1301,8 @@ EFI_STATUS import_mok_state(EFI_HANDLE image_handle)
 			config_table = NULL;
 		} else {
 			ZeroMem(config_table, npages << EFI_PAGE_SHIFT);
+			mok_config_table = (EFI_PHYSICAL_ADDRESS)(uintptr_t)config_table;
+			mok_config_table_pages = npages;
 		}
 	}
 
