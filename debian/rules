@@ -2,25 +2,15 @@
 
 include /usr/share/dpkg/architecture.mk
 
-# Other vendors, add your certs here.  No sense in using
-# dpkg-vendor --derives-from, because only Canonical-generated binaries will
-# be signed with this key; so if you are building your own shim binary you
-# should be building the other binaries also.
-ifeq ($(shell dpkg-vendor --is ubuntu && echo yes),yes)
-	cert=debian/canonical-uefi-ca.der
-	distributor=ubuntu
-COMMON_OPTIONS ?= ENABLE_SHIM_CERT=1 ENABLE_SBSIGN=1
-else
-	cert=debian/debian-uefi-ca.der
-	distributor=debian
-endif
+cert=debian/debian-vyos-uefi-ca.esl
+distributor=vyos
 
 deb_version             := $(shell dpkg-parsechangelog | sed -ne "s/^Version: \(.*\)/\1/p")
 upstream_version        := $(shell echo $(deb_version) | sed -e "s/-[^-]*$$//")
 plain_upstream_version  := $(shell echo $(upstream_version) | sed -e "s/+dfsg.*//")
 
 DBX_LIST = dbx.esl
-DBX_HASHES = debian/$(distributor)-dbx.hashes
+DBX_HASHES = debian/debian-dbx.hashes
 SBAT_IN = debian/sbat.$(distributor).csv.in
 SBAT_DATA = data/sbat.$(distributor).csv
 
@@ -41,7 +31,7 @@ COMMON_OPTIONS += \
 	COMMIT_ID=657b2483ca6e9fcf2ad8ac7ee577ff546d24c3aa \
 	MAKELEVEL=0 \
 	ENABLE_HTTPBOOT=true \
-	VENDOR_CERT_FILE=$(cert) \
+	VENDOR_DB_FILE=$(cert) \
 	VENDOR_DBX_FILE=$(DBX_LIST) \
 	EFIDIR=$(distributor) \
 	CROSS_COMPILE=$(DEB_HOST_GNU_TYPE)- \
@@ -49,9 +39,9 @@ COMMON_OPTIONS += \
 	$(NULL)
 
 # Force shim to use the latest revocations by default to block some
-# older grub / peimage issues. This is:
-# "shim,4\ngrub,4\ngrub.peimage,2\n"
-COMMON_OPTIONS += SBAT_AUTOMATIC_DATE=2024010900
+# older grub issues. This is:
+# "shim,4\ngrub,5\n"
+COMMON_OPTIONS += SBAT_AUTOMATIC_DATE=2025021800
 
 $(DBX_LIST): $(DBX_HASHES)
 	./debian/generate_dbx_list $(EFI_ARCH) $< $@

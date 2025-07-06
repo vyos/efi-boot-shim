@@ -1,0 +1,45 @@
+From: =?utf-8?q?Fabian_Gr=C3=BCnbichler?= <f.gruenbichler@proxmox.com>
+Date: Mon, 24 Mar 2025 12:58:56 +0100
+Subject: test-mock-variables: explicitly skip CONFIG_ONLY vars
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+otherwise we might pass invalid pointers to load_variables and cause
+segfaults in test cases.
+
+Signed-off-by: Fabian Grünbichler <f.gruenbichler@proxmox.com>
+---
+Submitted upstream: https://github.com/rhboot/shim/pull/739/
+
+ test-mock-variables.c | 8 ++++++--
+ 1 file changed, 6 insertions(+), 2 deletions(-)
+
+diff --git a/test-mock-variables.c b/test-mock-variables.c
+index f869300..dd4a9eb 100644
+--- a/test-mock-variables.c
++++ b/test-mock-variables.c
+@@ -212,8 +212,10 @@ test_gnvn_helper(char *testvars)
+ 		 * mok mirroring that aren't really from mok; right now
+ 		 * this is a reasonable heuristic for that.
+ 		 */
+-		if (mok_state_variables[i].flags & MOK_VARIABLE_CONFIG_ONLY)
++		if (mok_state_variables[i].flags & MOK_VARIABLE_CONFIG_ONLY) {
++			mok_rt_vars[i] = "";
+ 			continue;
++		}
+ 		mok_rt_vars[i] = mok_state_variables[i].rtname8;
+ 	}
+ 
+@@ -313,8 +315,10 @@ test_get_variable_0(void)
+ 		 * mok mirroring that aren't really from mok; right now
+ 		 * this is a reasonable heuristic for that.
+ 		 */
+-		if (mok_state_variables[i].flags & MOK_VARIABLE_CONFIG_ONLY)
++		if (mok_state_variables[i].flags & MOK_VARIABLE_CONFIG_ONLY) {
++			mok_rt_vars[i] = "";
+ 			continue;
++		}
+ 		mok_rt_vars[i] = mok_state_variables[i].rtname8;
+ 	}
+ 

@@ -1,0 +1,1 @@
+shim.vyos,1,VyOS,shim,@UPSTREAM_VERSION@,https://github.com/vyos/efi-boot-shim.git

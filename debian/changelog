@@ -1,3 +1,9 @@
+shim (16.0-1+vyos1) UNRELEASED; urgency=medium
+
+  * Add VyOS's CA alongside Debian's.
+
+ -- Christian Breunig <christian@breunig.cc>  Wed, 02 Jul 2025 22:34:39 +0200
+
 shim (15.8-1) unstable; urgency=medium
 
   [ Steve McIntyre ]
