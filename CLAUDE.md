@@ -15,7 +15,7 @@ VyOS fork of [rhboot/shim](https://github.com/rhboot/shim) — a first-stage UEF
 ```
 git submodule update --init --recursive    # gnu-efi must be present
 make VENDOR_CERT_FILE=pub.cer               # DER-encoded vendor certificate
-# Optional release tag:
+# Optional packaging release suffix (sets DASHRELEASE in install paths):
 make RELEASE=1
 ```
 
@@ -25,7 +25,7 @@ See `BUILDING` for full options. Test plan in `testplan.txt`. To produce a Debia
 
 - `Makefile` — top-level build (variables: `VENDOR_CERT_FILE`, `RELEASE`, ...).
 - C sources for the shim itself plus fallback (`fallback.c`) and MOK manager.
-- `gnu-efi/` — git submodule (`https://github.com/rhboot/gnu-efi.git@shim-16.0`).
+- `gnu-efi/` — git submodule (`https://github.com/rhboot/gnu-efi.git`, branch `shim-16.0`).
 - `BUILDING`, `README.md`, `README.fallback`, `README.tpm`, `testplan.txt`.
 - `.github/`, `.clang-format`.
 
