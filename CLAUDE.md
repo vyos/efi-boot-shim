@@ -48,7 +48,3 @@ No mirror twin in `VyOS-Networks`.
 - Fork parent: `rhboot/shim`. The vendored `gnu-efi` submodule is also a Red Hat fork (`rhboot/gnu-efi`).
 - A new VyOS shim must go through Microsoft shim review (see `vyos/shim-review`) before it can be signed for Secure Boot. Rebuilds without re-review will not be Secure-Boot-trusted.
 - Security contact in upstream is `secalert@redhat.com`; for VyOS-specific issues file at https://vyos.dev.
-
----
-
-This file is mirrored on Confluence: [`vyos/efi-boot-shim`](https://internal.confluence.vyos.com/wiki/spaces/VYOS/pages/818020497). The Confluence page also carries the per-repo audit data (settings, workflows, secret counts, hygiene) that complements this CLAUDE.md. Edit either side; resync via the documentation pipeline.
