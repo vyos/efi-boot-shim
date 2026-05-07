@@ -31,17 +31,13 @@ See `BUILDING` for full options. Test plan in `testplan.txt`. To produce a Debia
 
 ## Cross-repo context
 
-Native UEFI artifact. Built once and embedded into VyOS ISOs assembled by `vyos/vyos-build`. Companion repo `vyos/shim-review` carries the public shim-review submission paperwork required by Microsoft to sign each VyOS-built shim. Both belong to the build-infrastructure / packaging category. The standard VyOS package mirror twin pattern does **not** apply here (no `VyOS-Networks/efi-boot-shim`).
+Native UEFI artifact. Built once and embedded into VyOS ISOs assembled by `vyos/vyos-build`. Companion repo `vyos/shim-review` carries the public shim-review submission paperwork required by Microsoft to sign each VyOS-built shim. Both belong to the build-infrastructure / packaging category. The standard VyOS package mirror twin pattern does **not** apply here (no an internal repository).
 
 ## Conventions
 
 - Commit / PR title format: `component: T12345: description` (Phorge task ID at https://vyos.dev mandatory). Enforced where consumed via `vyos/.github` reusables.
 - Upstream-tracking fork — keep the diff against `rhboot/shim` minimal; bump `gnu-efi` submodule branch in lockstep with shim version.
 - Branch model: VyOS train branches (`current`, `sagitta`, `circinus`) overlaid on upstream tags.
-
-## Mirror relationship
-
-No mirror twin in `VyOS-Networks`.
 
 ## Notes for future contributors
 
