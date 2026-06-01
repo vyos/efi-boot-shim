@@ -37,7 +37,7 @@ Native UEFI artifact. Built once and embedded into VyOS ISOs assembled by `vyos/
 
 - Commit / PR title format: `component: T12345: description` (Phorge task ID at https://vyos.dev mandatory). Enforced where consumed via `vyos/.github` reusables.
 - Upstream-tracking fork — keep the diff against `rhboot/shim` minimal; bump `gnu-efi` submodule branch in lockstep with shim version.
-- Branch model: VyOS train branches (`current`, `sagitta`, `circinus`) overlaid on upstream tags.
+- Branch model: VyOS train branches (`rolling`, `sagitta`, `circinus`) overlaid on upstream tags.
 
 ## Notes for future contributors
 
